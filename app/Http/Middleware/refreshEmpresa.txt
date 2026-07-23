@@ -1,0 +1,74 @@
+<?php
+
+namespace App\Http\Middleware;
+
+use Closure;
+use Illuminate\Http\Request;
+use Firebase\JWT\JWT;
+use Firebase\JWT\Key;
+use Illuminate\Support\Facades\Cookie;
+use Symfony\Component\HttpFoundation\Response;
+
+class RefreshEmpresaTokenMiddleware{
+  public function handle(Request $request, Closure $next): Response{
+    // 1️⃣ Leer token de contexto empresa
+    $token = $request->cookie('moriah_key');
+
+    if (!$token) {
+      return $next($request);
+    }
+
+    try {
+      $decoded = JWT::decode(
+        $token,
+        new Key(config('services.jwt.secret'), 'HS256')
+      );
+
+      // 2️⃣ Validar que sea token de CONTEXTO
+      if (empty($decoded->ctx) || $decoded->ctx !== 'moriah' || empty($decoded->empresa_token)) {
+        return $next($request);
+      }
+
+      // 3️⃣ Revisar expiración
+      $timeLeft = $decoded->exp - time();
+
+      // 4️⃣ Refrescar solo si está por expirar (≤10 min)
+      if ($timeLeft > 0 && $timeLeft <= 300) {
+        $payload = [
+          'ctx'            => 'moriah',
+          'user_token' => $decoded->user_token,
+          'empresa_token'  => $decoded->empresa_token,
+          'iat'            => time(),
+          'exp'            => time() + (30 * 60) // 30 minutos
+        ];
+
+        $newJwt = JWT::encode(
+          $payload,
+          config('services.jwt.secret'),
+          'HS256'
+        );
+
+        // ⚠️ Cookie = mismo TTL que JWT
+        $cookie = cookie(
+          'moriah_key',        //nombre de la cookie
+          $newJwt,                 //El JWT generado
+          240,                  //4 horas exactas
+          '/',                  //ruta
+          'testsistemas.sos-mexico.com.mx', //Dominio
+          true,                 //Secure (Cambiar a true solo con HTTPS)
+          true,                 //HttpOnly (Protección contra robo por JS)
+          false,                //Raw define si el valor de la cookie debe enviarse al navegador de forma "cruda" o si debe pasar por un proceso de codificación automática
+          'None'              //SameSite Lax Strict None
+        );
+
+        $response = $next($request);
+        return $response->withCookie($cookie);
+      }
+    } catch (\Throwable $e) {
+      // Token inválido o expirado → no refrescamos
+      // El middleware de contexto se encargará de bloquear
+    }
+
+    return $next($request);
+  }
+}

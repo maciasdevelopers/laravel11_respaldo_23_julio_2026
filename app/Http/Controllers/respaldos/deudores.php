@@ -1,0 +1,497 @@
+  public function deudorDetalleInfoPagos(Request $request){
+    $JwtAuth = new \JwtAuth();
+    $jsonUser = $request->input('json');
+    $parametros = json_decode($jsonUser);
+    $parametrosArray = json_decode($jsonUser, true);
+    $arrayDeudores = array();
+    if (!empty($parametros) && !empty($parametrosArray)) {
+      $validate = \Validator::make($parametrosArray, [
+        "user_token" => "required|string",
+        "token_cat_deudores" => "required|string",
+      ]);
+
+      if ($validate->fails()) {
+        $dataMensaje = array(
+          'status' => 'error',
+          'code' => 200,
+          'message' => 'La infomación que ha intantado registrar es invalida',
+          'errors' => $validate->errors()
+        );
+      } else {
+        $usuario = $JwtAuth->checkToken($parametrosArray["user_token"], true);
+        $token_cat_deudores = $parametrosArray["token_cat_deudores"];
+
+        $queryAcreedores = DB::table('fnzs_catalogo_acreedores AS catAcr')
+        ->join('main_empresas AS emp', 'catAcr.acr_empresa', '=', 'emp.id')
+        ->join('main_empresa_usuario AS empuser', 'emp.id', '=', 'empuser.empresa')
+        ->join('teci_usuarios_catalogo AS users', 'empuser.usuario', '=', 'users.id')
+        ->leftJoin('eegr_catalogo_proveedores AS catprov', 'catAcr.acr_proveedor_vinculado', '=', 'catprov.id')
+        ->leftJoin('sos_personas AS prv', 'catprov.proveedor', '=', 'prv.id')
+        ->where('catAcr.acr_status', true)
+        ->where('emp.empresa_token', $usuario->empresa_token)
+        ->where('users.usuario_token', $usuario->user_token)
+        ->select(
+          'catAcr.*',
+          'catAcr.acr_rfc as rfc_acr',
+          'catAcr.acr_taxId as tax_id_acr',
+          'catAcr.acr_titular as nombre_acr',
+          'catAcr.acr_nombre_comercial as nombre_comercial_acr',
+
+          'prv.rfc as rfc_prv',
+          'prv.tax_id as tax_id_prv',
+          'prv.nombre_extendido as nombre_extendido_prv',
+          'prv.paterno as paterno_prv',
+          'prv.materno as materno_prv',
+          'prv.nombre as nombre_prv',
+          'prv.nombre_com as nombre_com_prv',
+          'catAcr.acr_cuenta_contable',
+          'emp.*'
+        )->get();
+        
+        $listaAcreedores = $queryAcreedores->map(function($vAcr) use ($JwtAuth) {
+          date_default_timezone_set('UTC');
+          $folio_acr = 'ACREE-'.$JwtAuth->generarFolio($vAcr->acr_folio).(!is_null($vAcr->acr_post_folio) ? '-'.$vAcr->acr_post_folio : '');
+          $vAcr->folio_acr = $folio_acr;
+
+          // Determinar si usamos persona o proveedor
+          //echo $vAcr->deudor;
+          if (is_null($vAcr->acr_proveedor_vinculado)) {
+            $vAcr->rfc_acr = $vAcr->rfc_acr ? $JwtAuth->desencriptar($vAcr->rfc_acr) : '';
+            $vAcr->tax_id_acr = $vAcr->tax_id_acr ? $JwtAuth->desencriptar($vAcr->tax_id_acr) : '';
+            $vAcr->acreedor_nombre = $vAcr->nombre_acr != '' ? $JwtAuth->desencriptar($vAcr->nombre_acr) : '';
+            $vAcr->acreedor_nombre_comercial = $vAcr->nombre_comercial_acr ? $JwtAuth->desencriptar($vAcr->nombre_comercial_acr) : '';
+          } else {
+            $vAcr->rfc_ddr = $vAcr->rfc_prv ? $JwtAuth->desencriptar($vAcr->rfc_prv) : '';
+            $vAcr->tax_id_ddr = $vAcr->tax_id_prv ? $JwtAuth->desencriptar($vAcr->tax_id_prv) : '';
+            $vAcr->acreedor_nombre = $vAcr->nombre_extendido_prv != '' ? $JwtAuth->desencriptar($vAcr->nombre_extendido_prv) : $JwtAuth->desencriptarNombres($vAcr->paterno_prv, $vAcr->materno_prv, $vAcr->nombre_prv);
+            $vAcr->acreedor_nombre_comercial = $vAcr->nombre_com_prv ? $JwtAuth->desencriptar($vAcr->nombre_com_prv) : '';
+          }
+          $vAcr->acreedor_nombre = strtolower(trim($vAcr->acreedor_nombre));
+          $vAcr->acreedor_nombre_comercial = strtolower(trim($vAcr->acreedor_nombre_comercial));
+          return $vAcr;
+        });
+
+        $queryDeudores = DB::table("fnzs_catalogo_deudores AS catDeu")
+        ->join("main_empresas AS emp", "catDeu.deu_empresa", "=", "emp.id")
+        ->join("main_empresa_usuario AS empuser", "emp.id", "=", "empuser.empresa")
+        ->join("teci_usuarios_catalogo AS users", "empuser.usuario", "=", "users.id")
+        ->where("catDeu.token_cat_deudores",$token_cat_deudores)
+        ->where("catDeu.deu_status",TRUE)
+        ->where("emp.empresa_token",$usuario->empresa_token)
+        ->where("users.usuario_token",$usuario->user_token)
+        ->get();
+        foreach ($queryDeudores as $vDeu) {
+          date_default_timezone_set($vDeu->zona_horaria);
+
+          $folio_deu = 'DEU-'.$JwtAuth->generarFolio($vDeu->deu_folio).(!is_null($vDeu->deu_post_folio) ? '-'.$vDeu->deu_post_folio : '');
+
+          $estado_cuenta_deudor = array();
+          $pagos = DB::table("fnzs_pagos_pago AS pago")
+          ->join("fnzs_catalogo_deudores AS catDeu", "pago.vinc_deudor", "=", "catDeu.id")
+          ->leftJoin("fnzs_catalogo_deudores_movimientos_pagos_vinculados AS vinc", "pago.id", "=", "vinc.pago_vinculado")
+          ->leftJoin("fnzs_catalogo_deudores_movimientos AS mov", "vinc.mov_realizado", "=", "mov.id")
+          ->where("mov.condicion_deu_mov","S")
+          ->where("catDeu.token_cat_deudores",$vDeu->token_cat_deudores)
+          ->select([
+            DB::raw("'PAGO' AS tipo_registro_e_cuenta"),
+            "pago.token_pagos AS token_pagos",
+            "pago.token_pagos AS id_registro",
+            "pago.folio_pagos AS folio_movimiento",
+            "pago.fecha_contabilizacion AS fecha_contabilizacion",
+            "pago.observacionesPago AS observaciones",
+            "pago.forma_pago_pago AS forma_pago_pago",
+            "pago.monto_pago AS monto_movimiento",
+            "pago.tipo_cambio AS tipo_cambio_movimiento",
+            "pago.p_moneda AS moneda_movimiento",
+            DB::raw("NULL AS movimiento_id"),
+          ]);
+
+          $cancelaciones = DB::table("fnzs_pagos_pago AS pago")
+          ->join("fnzs_catalogo_deudores AS catDeu", "pago.vinc_deudor", "=", "catDeu.id")
+          ->leftJoin("fnzs_catalogo_deudores_movimientos_pagos_vinculados AS vinc", "pago.id", "=", "vinc.pago_vinculado")
+          ->leftJoin("fnzs_catalogo_deudores_movimientos AS mov", "vinc.mov_realizado", "=", "mov.id")
+          ->where("pago.pago_cancelado", TRUE)
+          ->where("catDeu.token_cat_deudores", $vDeu->token_cat_deudores)
+          ->select([
+            DB::raw("'CANCELACION' AS tipo_registro_e_cuenta"),
+            "pago.token_pagos AS token_pagos",
+            "pago.token_pagos AS id_registro",
+            "pago.pago_folio_cancelacion AS folio_movimiento",
+            "pago.pago_fecha_contabilizacion_cancelacion AS fecha_contabilizacion",
+            "pago.pago_comentarios_cancelacion AS observaciones",
+            "pago.forma_pago_pago AS forma_pago_pago",
+            "pago.monto_pago AS monto_movimiento",
+            "pago.tipo_cambio AS tipo_cambio_movimiento",
+            "pago.p_moneda AS moneda_movimiento",
+            DB::raw("NULL AS movimiento_id"),
+          ]);
+
+          $movimientosSuma = DB::table("fnzs_catalogo_deudores_movimientos AS mov")
+          ->join("fnzs_catalogo_deudores AS catDeu", "mov.vinc_deudor", "=", "catDeu.id")
+          ->leftJoin("fnzs_catalogo_deudores_movimientos_pagos_vinculados AS vinc", "mov.id", "=", "vinc.mov_realizado")
+          ->leftJoin("fnzs_pagos_pago AS pago", "vinc.pago_vinculado", "=", "pago.id")
+          ->whereNull('mov.deu_mov_asociado')
+          ->where([
+            "mov.condicion_deu_mov" => "S",
+            "catDeu.token_cat_deudores" => $vDeu->token_cat_deudores
+          ])
+          ->select([
+            DB::raw("'movimiento_suma' AS tipo_registro_e_cuenta"),
+            "mov.token_deu_mov AS token_deu_mov",
+            "mov.token_deu_mov AS id_registro",
+            "mov.folio_deu_mov AS folio_movimiento",
+            "mov.deu_fecha_contabilizacion AS fecha_contabilizacion",
+            "mov.deu_observaciones_mov AS observaciones",
+            DB::raw("'---' AS forma_pago_pago"),
+            "mov.deu_monto_mov AS monto_movimiento",
+            "mov.deu_tipo_cambio AS tipo_cambio_movimiento",
+            "mov.deu_mov_moneda AS moneda_movimiento",
+            "mov.id AS movimiento_id",
+          ]);
+
+          $movimientosResta = DB::table("fnzs_catalogo_deudores_movimientos AS mov")
+          ->join("fnzs_catalogo_deudores AS catDeu", "mov.vinc_deudor", "=", "catDeu.id")
+          ->leftJoin("fnzs_catalogo_deudores_movimientos_pagos_vinculados AS vinc", "mov.id", "=", "vinc.mov_realizado")
+          ->leftJoin("fnzs_pagos_pago AS pago", "vinc.pago_vinculado", "=", "pago.id")
+          ->whereNull('mov.deu_mov_asociado')
+          ->where([
+            "mov.condicion_deu_mov" => "R",
+            "catDeu.token_cat_deudores" => $vDeu->token_cat_deudores
+          ])
+          ->select([
+            DB::raw("'movimiento_resta' AS tipo_registro_e_cuenta"),
+            "mov.token_deu_mov AS token_deu_mov",
+            "mov.token_deu_mov AS id_registro",
+            "mov.folio_deu_mov AS folio_movimiento",
+            "mov.deu_fecha_contabilizacion AS fecha_contabilizacion",
+            "mov.deu_observaciones_mov AS observaciones",
+            DB::raw("'---' AS forma_pago_pago"),
+            "mov.deu_monto_mov AS monto_movimiento",
+            "mov.deu_tipo_cambio AS tipo_cambio_movimiento",
+            "mov.deu_mov_moneda AS moneda_movimiento",
+            "mov.id AS movimiento_id",
+          ]);
+
+          $queryEstadoDeCuenta = $pagos->unionAll($cancelaciones)->unionAll($movimientosSuma)->unionAll($movimientosResta)
+          ->orderBy("fecha_contabilizacion", "asc")
+          ->get();
+          $contador = 0;
+          foreach ($queryEstadoDeCuenta as $vECuenta) {
+            //$token_pagos = $vECuenta->tipo_registro_e_cuenta == "PAGO" ? $vECuenta->id_registro : "";
+            $token_pagos = $vECuenta->token_pagos;
+            //echo "token_pagos $token_pagos ";
+            //echo "monto_movimiento ". $vECuenta->tipo_registro_e_cuenta == "MOVIMIENTO" ? $vECuenta->monto_movimiento." " : " ";
+            $payment_observaciones = !is_null($vECuenta->observaciones) ? $JwtAuth->desencriptar($vECuenta->observaciones) : '';
+					  $forma_pago_registrada = $vECuenta->forma_pago_pago;
+
+					  $cfdi_comprobante_metodo_de_pago = "";
+					  $queryMetodoPago = DB::table("cfdi_comprobantes_fiscales AS cfdi")
+            ->join("cfdi_vinculacion_compras AS vinc_buy", "cfdi.id", "=", "vinc_buy.comprobante_fiscal")
+            ->join("eegr_compras AS buy", "vinc_buy.compra_vinculada", "buy.id")
+            ->join("fnzs_pagos_orden AS order", "buy.id", "order.factura_compra")
+            ->join("fnzs_pagos_pago_ordenes_vinculadas AS vinc", "order.id", "=", "vinc.orden_pago_vinculada")
+            ->join("fnzs_pagos_pago AS payment", "vinc.pago_realizado", "=", "payment.id")
+            ->where("payment.token_pagos", $token_pagos)
+            ->select("cfdi.cfdi_comprobante_metodo_de_pago")->first();
+
+            $cfdi_comprobante_metodo_de_pago = $queryMetodoPago ? $queryMetodoPago->cfdi_comprobante_metodo_de_pago : "";
+
+            //"estado_cuenta_debe" => "---",
+            //"estado_cuenta_haber" => "$".number_format($vECuenta->monto_movimiento * $vECuenta->tipo_cambio_movimiento,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento),'.', ',')." $vECuenta->moneda_movimiento",
+            //"estado_cuenta_saldo" => "$".number_format($pago_restante,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento), '.', ',')." ".$vECuenta->moneda_movimiento,
+            //$e_cuenta_debe = $vECuenta->tipo_registro_e_cuenta == "PAGO" || $vECuenta->tipo_registro_e_cuenta == "movimiento_suma" ? $vECuenta->monto_movimiento : 0;
+            //$e_cuenta_haber = $vECuenta->tipo_registro_e_cuenta == "movimiento_resta" ? $vECuenta->monto_movimiento : 0;
+            
+            $e_cuenta_debe = $vECuenta->tipo_registro_e_cuenta == "CANCELACION" || $vECuenta->tipo_registro_e_cuenta == "movimiento_suma" ? $vECuenta->monto_movimiento : 0;
+            $e_cuenta_haber = $vECuenta->tipo_registro_e_cuenta == "PAGO" || $vECuenta->tipo_registro_e_cuenta == "movimiento_resta" ? $vECuenta->monto_movimiento : 0;
+            $e_cuenta_saldo = count($estado_cuenta_deudor) == 0 ? $e_cuenta_debe - $e_cuenta_haber : ($estado_cuenta_deudor[$contador-1]["estado_cuenta_saldo"] +  $e_cuenta_debe) - $e_cuenta_haber;
+            
+            //echo count($estado_cuenta_acreedor);
+            $row_cuenta_estado = array(
+              "contador" => $contador, 
+              "tipo_registro_e_cuenta" => $vECuenta->tipo_registro_e_cuenta,
+              
+              //pagos
+              "pago_token" => $vECuenta->tipo_registro_e_cuenta == "PAGO" ? $token_pagos : '',
+              "pago_folio" => $vECuenta->tipo_registro_e_cuenta == "PAGO" ? "PAGO-".$JwtAuth->generarFolio($vECuenta->folio_movimiento) : "",
+              
+              //movimientos
+              "movimiento_token" => $vECuenta->tipo_registro_e_cuenta == "movimiento_suma" || $vECuenta->tipo_registro_e_cuenta == "movimiento_resta" ? $vECuenta->id_registro : "",
+              "movimiento_folio" => $vECuenta->tipo_registro_e_cuenta == "movimiento_suma" || $vECuenta->tipo_registro_e_cuenta == "movimiento_resta" ? "DEUMOV-".$JwtAuth->generarFolio($vECuenta->folio_movimiento) : "",
+
+              //cancelaciones
+              "cancelacion_token" => $vECuenta->tipo_registro_e_cuenta == "CANCELACION" ? $vECuenta->id_registro : "",
+              "cancelacion_folio" => $vECuenta->tipo_registro_e_cuenta == "CANCELACION" ? "PCAN-".$JwtAuth->generarFolio($vECuenta->folio_movimiento) : "",
+              "cancelacion_doc_anterior" => $vECuenta->tipo_registro_e_cuenta == "CANCELACION" ? "PAGO-".$JwtAuth->generarFolio(DB::table("fnzs_pagos_pago")->where("token_pagos",$vECuenta->id_registro)->value("folio_pagos")) : "",
+
+              //neutrales
+					  	"fecha_contabilizacion" => !empty($vECuenta->fecha_contabilizacion) ? date('d-m-Y', $vECuenta->fecha_contabilizacion) : "",
+              "tipo_cambio_movimiento" => "$".number_format($vECuenta->tipo_cambio_movimiento,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento),'.',',')." $vECuenta->moneda_movimiento",
+              "forma_pago_vinculada" => "---",
+              "forma_pago_cfdi" => $forma_pago_registrada." - ".$JwtAuth->getFormasPagoAPI($forma_pago_registrada),
+              "metodo_pago_cfdi" => $cfdi_comprobante_metodo_de_pago,
+              "observacionesPago" => $payment_observaciones,
+              "pago_moneda" => $vECuenta->moneda_movimiento,
+							"pago_moneda_decimales" =>$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento),
+              "monto_pago" => "$".number_format($vECuenta->monto_movimiento * $vECuenta->tipo_cambio_movimiento,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento),'.', ',')." $vECuenta->moneda_movimiento",
+              "estado_cuenta_debe" => $e_cuenta_debe,
+              "estado_cuenta_debe_format" => "$".number_format($e_cuenta_debe,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento),'.', ',')." $vECuenta->moneda_movimiento",
+              "estado_cuenta_haber" => $e_cuenta_haber,
+              "estado_cuenta_haber_format" => "$".number_format($e_cuenta_haber,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento),'.', ',')." $vECuenta->moneda_movimiento",
+              "estado_cuenta_saldo" => $e_cuenta_saldo,
+              "estado_cuenta_saldo_format" => "$".number_format($e_cuenta_saldo,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento),'.', ',')." $vECuenta->moneda_movimiento",
+              //registrar nuevos movimientos
+              //"pago_restante" => $pago_restante,
+              //"importe_restante" => number_format($pago_restante,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento), '.', ''),
+							//"importe_por_pagar" => "0.00",
+              //"debe_simple" => number_format($pago_restante,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento), '.', ''),
+              //"debe_format" => "$".number_format($pago_restante,$JwtAuth->getMonedaAPI($vECuenta->moneda_movimiento), '.', ',')." ".$vECuenta->moneda_movimiento,
+            );
+            $estado_cuenta_deudor[] = $row_cuenta_estado;
+            ++$contador;
+          }
+
+          $deudor_deuda_total = 0;
+          $deudor_deuda_restante = 0;
+          $deudor_deuda_debe = 0;
+          $deudor_deuda_haber = 0;
+          $deudor_deuda_saldo = 0;
+          $pagos_deudor_moneda = "";
+
+          for ($i=0; $i < count($estado_cuenta_deudor); $i++) { 
+            $pagos_deudor_moneda = $vECuenta->moneda_movimiento;
+            $deudor_deuda_debe = $deudor_deuda_debe + floatval($estado_cuenta_deudor[$i]["estado_cuenta_debe"] ?? 0);
+            $deudor_deuda_haber = $deudor_deuda_haber + floatval($estado_cuenta_deudor[$i]["estado_cuenta_haber"] ?? 0);
+          }
+          $deudor_deuda_saldo = floatval($deudor_deuda_debe ?? 0) - floatval($deudor_deuda_haber ?? 0);
+
+          $pagos_deudor_list = array();
+          $queryPagosDeudor = DB::table("fnzs_pagos_pago AS pay")
+          ->join("fnzs_catalogo_deudores AS catDeu", "pay.vinc_deudor", "=", "catDeu.id")
+          ->where("catDeu.token_cat_deudores",$vDeu->token_cat_deudores)->get();
+          foreach ($queryPagosDeudor as $vPayDone) {
+            $payment_observaciones = !is_null($vPayDone->observacionesPago) ? $JwtAuth->desencriptar($vPayDone->observacionesPago) : '';
+					  $forma_pago_registrada = $vPayDone->forma_pago_pago;
+
+					  $forma_pago_vinculada = "";
+            $queryFormasDePago = DB::table("fnzs_pagos_pago AS payment")
+            ->leftJoin("fnzs_pagos_cajas_pago AS p_caj", "payment.id", "=", "p_caj.pago_realizado")
+            ->leftJoin("fnzs_catalogos_caja AS r_caj", "p_caj.caja_relacionada", "=", "r_caj.id")
+            ->leftJoin("fnzs_pagos_cuentas_pago AS p_cuent", "payment.id", "=", "p_cuent.pago_realizado")
+            ->leftJoin("fnzs_catalogos_cuentas AS r_cuent", "p_cuent.cuenta_relacionada", "=", "r_cuent.id")
+            ->leftJoin("fnzs_pagos_monederos_pago AS p_moned", "payment.id", "=", "p_moned.pago_realizado")
+            ->leftJoin("fnzs_catalogos_cuentas_monedero AS r_moned", "p_moned.cuenta_relacionada", "=", "r_moned.id")
+            ->where("payment.token_pagos", $vPayDone->token_pagos)
+            ->select("r_caj.*","r_cuent.*","r_moned.*")->get();
+            //->select("r_caj.token_caja","r_cuent.token_cuenta","r_moned.token_cuentamonedero")->get();
+
+            foreach ($queryFormasDePago as $vFPagoVinc) {
+              if ($vFPagoVinc->token_caja !== null) {
+  					    $forma_pago_vinculada = "Caja CAJ-".$JwtAuth->generarFolio($vFPagoVinc->no_caja);
+  						} elseif ($vFPagoVinc->token_cuenta !== null) {
+                $forma_pago_vinculada = "Banco CUENT-".$JwtAuth->generarFolio($vFPagoVinc->folio_cuenta);
+  						} elseif ($vFPagoVinc->token_cuentamonedero !== null) {
+                $forma_pago_vinculada = "Monedero CUENTM-" . $JwtAuth->generarFolio($vFPagoVinc->folio_cuentmon);
+  						}
+            }
+
+            $cfdi_comprobante_metodo_de_pago = "";
+					  $queryMetodoPago = DB::table("cfdi_comprobantes_fiscales AS cfdi")
+            ->join("cfdi_vinculacion_compras AS vinc_buy", "cfdi.id", "=", "vinc_buy.comprobante_fiscal")
+            ->join("eegr_compras AS buy", "vinc_buy.compra_vinculada", "buy.id")
+            ->join("fnzs_pagos_orden AS order", "buy.id", "order.factura_compra")
+            ->join("fnzs_pagos_pago_ordenes_vinculadas AS vinc", "order.id", "=", "vinc.orden_pago_vinculada")
+            ->join("fnzs_pagos_pago AS payment", "vinc.pago_realizado", "=", "payment.id")
+            ->where("payment.token_pagos", $vPayDone->token_pagos)
+            ->select("cfdi.cfdi_comprobante_metodo_de_pago")->first();
+
+            $cfdi_comprobante_metodo_de_pago = $queryMetodoPago ? $queryMetodoPago->cfdi_comprobante_metodo_de_pago : "";
+
+            $movs_realizados = 0;
+            $pago_movimientos_realizados = [];
+            $queryMovimientosDone = DB::table("fnzs_catalogo_deudores_movimientos AS deumov")
+            ->join("fnzs_catalogo_deudores_movimientos_pagos_vinculados AS vinc", "deumov.id", "=","vinc.mov_realizado")
+            ->join("fnzs_pagos_pago AS pay", "vinc.pago_vinculado", "=", "pay.id")
+            ->where("pay.token_pagos",$vPayDone->token_pagos)->get();
+            foreach ($queryMovimientosDone as $vMovDone) {
+              $movs_realizados += $vMovDone->monto_pago;
+            }
+            
+            $importe_pago = $vPayDone->monto_pago * $vPayDone->tipo_cambio;
+            $pago_restante = count($queryMovimientosDone) > 0 ? ($importe_pago) - $movs_realizados : $importe_pago;
+
+  					$queryDocAnterior = DB::table("fnzs_pagos_orden AS order")
+            ->join("fnzs_pagos_pago_ordenes_vinculadas AS vinc", "order.id", "=", "vinc.orden_pago_vinculada")
+            ->join("fnzs_pagos_pago AS payment", "vinc.pago_realizado", "=", "payment.id")
+            ->where("payment.token_pagos", $vPayDone->token_pagos)
+            ->select("order.folio_ordenPago","order.fecha_contabilizacion_ordenPago")
+            ->first();
+            $doc_anterior_folio = $queryDocAnterior ? "ORDP-".$JwtAuth->generarFolio($queryDocAnterior->folio_ordenPago) : '';
+            $doc_anterior_fecha_contabilizacion = $queryDocAnterior ? date('d-m-Y',$queryDocAnterior->fecha_contabilizacion_ordenPago) : '';
+
+            $row_pagos_realizados = array(
+              "token_pagos" => $vPayDone->token_pagos,
+              "folio_pagos" => "PAGO-".$JwtAuth->generarFolio($vPayDone->folio_pagos),
+              "status_pago" => $vPayDone->status_pagos ? true : false,
+              "doc_anterior_folio" => $doc_anterior_folio,
+              "doc_anterior_fecha_contabilizacion" => $doc_anterior_fecha_contabilizacion,
+					  	"fecha_contabilizacion" => !empty($vPayDone->fecha_contabilizacion) ? date('d-m-Y', $vPayDone->fecha_contabilizacion) : "",
+              "forma_pago_vinculada" => $forma_pago_vinculada,
+              "forma_pago_cfdi" => $forma_pago_registrada." - ".$JwtAuth->getFormasPagoAPI($forma_pago_registrada),
+              "metodo_pago_cfdi" => $cfdi_comprobante_metodo_de_pago,
+              "concepto" => !empty($vPayDone->concepto) ? $JwtAuth->desencriptar($vPayDone->concepto) : '',
+              "monto_pago" => "$".number_format($vPayDone->monto_pago * $vPayDone->tipo_cambio,$JwtAuth->getMonedaAPI($vPayDone->p_moneda),'.', ',')." $vPayDone->p_moneda",
+              "p_moneda" => $vPayDone->p_moneda,
+              "tipo_cambio" => "$".number_format($vPayDone->tipo_cambio,$JwtAuth->getMonedaAPI($vPayDone->p_moneda),'.',',')." $vPayDone->p_moneda",
+              "observacionesPago" => $payment_observaciones,
+              "pago_restante" => $pago_restante,
+              "importe_restante" => number_format($pago_restante,$JwtAuth->getMonedaAPI($vPayDone->p_moneda), '.', ''),
+							"importe_por_pagar" => "0.00",
+              "debe_simple" => number_format($pago_restante,$JwtAuth->getMonedaAPI($vPayDone->p_moneda), '.', ''),
+              "debe_format" => "$".number_format($pago_restante,$JwtAuth->getMonedaAPI($vPayDone->p_moneda), '.', ',')." ".$vPayDone->p_moneda,
+            );
+            if ($pago_restante > 0) {
+              $pagos_deudor_list[] = $row_pagos_realizados;
+            }
+          }
+
+          $lista_movimientos_realizados = [];
+          $queryMovimientosDone = DB::table("fnzs_catalogo_deudores_movimientos AS deumov")
+          ->join("fnzs_catalogo_deudores AS catDeu","deumov.vinc_deudor", "=","catDeu.id")
+          ->join("fnzs_catalogo_deudores_movimientos_pagos_vinculados AS vinc", "deumov.id", "=","vinc.mov_realizado")
+          ->join("fnzs_pagos_pago AS pay", "vinc.pago_vinculado", "=", "pay.id")
+          ->where("catDeu.token_cat_deudores",$vDeu->token_cat_deudores)->get();
+          foreach ($queryMovimientosDone as $vMovDone) {
+            $queryPersResponsable = DB::table("fnzs_catalogo_deudores_movimientos AS movim")
+					  ->join("vhum_empleados_catalogo AS pers", "movim.deu_personal_mov", "pers.id")
+					  ->join("sos_personas AS people", "pers.empleado_name", "people.id")
+					  ->where('movim.token_deu_mov',$vMovDone->token_deu_mov)
+					  ->select('pers.empleado_token','pers.folio_pers','people.paterno','people.materno','people.nombre')
+					  ->first();
+					  $pers_responsmov_token = $queryPersResponsable ? $queryPersResponsable->empleado_token : "";
+            $pers_responsmov_folio = $queryPersResponsable ? "TRB-".$JwtAuth->generarFolio($queryPersResponsable->folio_pers) : "";
+					  $pers_responsmov_name = $queryPersResponsable ? $JwtAuth->desencriptarNombres($queryPersResponsable->paterno,$queryPersResponsable->materno,$queryPersResponsable->nombre) : "";
+
+            $queryCaja = DB::table("fnzs_catalogos_caja AS caj")
+            ->join("fnzs_catalogo_deudores_movimientos_cajas AS mov_caj", "caj.id", "mov_caj.caja_relacionada")
+            ->join("fnzs_catalogo_deudores_movimientos AS movim", "mov_caj.mov_realizado", "movim.id")
+            ->where('movim.token_deu_mov',$vMovDone->token_deu_mov)
+            ->select('caj.token_caja','caj.no_caja','caj.alias_caja')
+            ->first();
+
+            $queryCuenta = DB::table("fnzs_catalogos_cuentas AS cuent")
+            ->join("teci_bancos AS bank", "cuent.banco", "bank.id")
+            ->join("fnzs_catalogo_deudores_movimientos_cuentas AS mov_cuent", "cuent.id", "mov_cuent.cuenta_relacionada")
+            ->join("fnzs_catalogo_deudores_movimientos AS movim", "mov_cuent.mov_realizado", "movim.id")
+            ->where('movim.token_deu_mov',$vMovDone->token_deu_mov)
+            ->select('cuent.token_cuenta','cuent.folio_cuenta','cuent.cuenta')
+            ->first();
+
+            $queryMonedero = DB::table("fnzs_catalogos_cuentas_monedero AS moned")
+            //->join("teci_plataformas_digitales AS pdig", "moned.monedero", "pdig.id")
+            ->join("fnzs_catalogo_deudores_movimientos_monederos AS mov_mon", "moned.id", "mov_mon.moned_relacionado")
+            ->join("fnzs_catalogo_deudores_movimientos AS movim", "mov_mon.mov_realizado", "movim.id")
+            ->where('movim.token_deu_mov',$vMovDone->token_deu_mov)
+            ->select('moned.token_cuentamonedero','moned.folio_cuentmon','moned.cuenta')
+            ->first();
+
+            if ($queryCaja) {
+              $movimiento_tipo = "caja";
+              $movimiento_token = $queryCaja->token_caja;
+              $movimiento_folio = "CAJ-" . $JwtAuth->generarFolio($queryCaja->no_caja);
+              $movimiento_name = $JwtAuth->desencriptar($queryCaja->alias_caja);
+            } elseif ($queryCuenta) {
+              $movimiento_tipo = "banco";
+              $movimiento_token = $queryCuenta->token_cuenta;
+              $movimiento_folio = 'CUENT-'.$JwtAuth->generarFolio($queryCuenta->folio_cuenta);
+              $cuenta_descifrada = $JwtAuth->decryptBankAccount($queryCuenta->cuenta);
+              $cuenta_descifrada_substr = substr($cuenta_descifrada, -4);
+              $movimiento_name = "**** **** **** $cuenta_descifrada_substr";
+            } elseif ($queryMonedero) {
+              $movimiento_tipo = "monedero";
+              $movimiento_token = $queryMonedero->token_cuentamonedero;
+              $movimiento_folio = "CUENTM-".$JwtAuth->generarFolio($queryMonedero->folio_cuentmon) ;
+              $movimiento_name = $queryMonedero->cuenta;
+            } else {
+              $movimiento_tipo = "N/A";
+              $movimiento_token = "N/A";
+              $movimiento_folio = "N/A";
+              $movimiento_name = "N/A";
+            }
+
+            $mainMovs = DB::table("fnzs_actividad_movimientos AS movAct")
+            ->join("fnzs_catalogo_deudores_movimientos AS movim", "movAct.acreedor_movimiento", "movim.id")
+            ->where('movim.token_deu_mov',$vMovDone->token_deu_mov)
+            ->select('movAct.tipo_movimiento','movAct.subtipo_movimiento')
+            ->first();
+
+            $row_mov_acr = array(
+              "token_deu_mov" => $vMovDone->token_deu_mov,
+              "folio_deu_mov" => "ACRMOV-".$JwtAuth->generarFolio($vMovDone->folio_deu_mov),
+              "deu_fecha_contabilizacion" => date('d-m-Y', $vMovDone->deu_fecha_contabilizacion),
+              "tipo_movimiento" => $mainMovs ? $mainMovs->tipo_movimiento : '',
+              "subtipo_movimiento" => $mainMovs ? $mainMovs->subtipo_movimiento : '',
+              //"responsable" => $vEmp->userr,
+              "responsable_token" => $pers_responsmov_token,
+					    "responsable_folio" => $pers_responsmov_folio,
+					    "responsable_name" => $pers_responsmov_name,
+              //"cuenta_monedero" => $sql_cuenta_monedero,
+              "movimiento_tipo" => $movimiento_tipo,
+              "movimiento_token" => $movimiento_token,
+              "movimiento_folio" => $movimiento_folio,
+              "movimiento_name" => $movimiento_name,
+              "monto_aplicado" => "$".number_format($vMovDone->deu_monto_mov,$JwtAuth->getMonedaAPI($vPayDone->p_moneda),'.', ',')." $vPayDone->p_moneda",
+            );
+            $lista_movimientos_realizados[] = $row_mov_acr;
+          }
+
+          $_deudor_nombre = $JwtAuth->desencriptar($vDeu->deu_titular);
+          $_acreedor_vinculado = $listaAcreedores->first(function($vAcr) use ($_deudor_nombre) {return $vAcr->acreedor_nombre === strtolower(trim($_deudor_nombre));});
+          //echo $_deudor_vinculado->deudor_nombre;
+
+          $arrayForeach = array(
+            "token_cat_deudores" => $vDeu->token_cat_deudores,
+            "folio" => $folio_deu,
+            "tipo" => $vDeu->deu_nacionalidad == 'MEX' ? 'Nacional' : 'Extranjero',
+            "subtipo" => $vDeu->deu_fisica_moral == 'PF' ? 'Fisica' : 'Moral',
+            //"pais" => $vDeu->pais,
+            "rfc_ddr" => $vDeu->deu_rfc	!= NULL ? $JwtAuth->desencriptar($vDeu->deu_rfc) : '',
+            "tax_id_ddr" => $vDeu->deu_taxId != NULL ? $JwtAuth->desencriptar($vDeu->deu_taxId) : '',
+            "nombre" => $_deudor_nombre,
+            "nombre_comercial" => !is_null($vDeu->deu_nombre_comercial) && $vDeu->deu_nombre_comercial != '' ? $JwtAuth->desencriptar($vDeu->deu_nombre_comercial) : '',
+            "cuenta_contable" => !empty($vDeu->cuenta_contable) ? $JwtAuth->desencriptar($vDeu->cuenta_contable) : '',
+            "acreedor_vinculado_token" => $_acreedor_vinculado ? $_acreedor_vinculado->token_cat_acreedores : '',
+            "acreedor_vinculado_folio" => $_acreedor_vinculado ? $_acreedor_vinculado->folio_acr : '',
+            "acreedor_vinculado_nombre" => $_acreedor_vinculado ? $_acreedor_vinculado->acreedor_nombre : '',
+            
+            "deuda_del_deudor" => $deudor_deuda_total > 0 ? "$".number_format($deudor_deuda_total,$JwtAuth->getMonedaAPI($pagos_deudor_moneda),'.', ',')." $pagos_deudor_moneda" : "$0.00 MXN",
+            "deu_total_debe" => $deudor_deuda_debe > 0 ? "$".number_format($deudor_deuda_debe,$JwtAuth->getMonedaAPI($pagos_deudor_moneda),'.', ',')." $pagos_deudor_moneda" : "$0.00 MXN",
+            "deu_total_haber" => $deudor_deuda_haber > 0 ? "$".number_format($deudor_deuda_haber,$JwtAuth->getMonedaAPI($pagos_deudor_moneda),'.', ',')." $pagos_deudor_moneda" : "$0.00 MXN",
+            "deu_total_saldo_simple" => $deudor_deuda_saldo > 0 ? $deudor_deuda_saldo : 0,
+            "deu_total_saldo" => $deudor_deuda_saldo > 0 ? "$".number_format($deudor_deuda_saldo,$JwtAuth->getMonedaAPI($pagos_deudor_moneda),'.', ',')." $pagos_deudor_moneda" : "$0.00 MXN",
+            "deu_total_saldo_aplicar" => 0,
+            "deu_total_saldo_restante_simple" => $deudor_deuda_saldo > 0 ? $deudor_deuda_saldo : 0,
+            "deu_total_saldo_restante" => $deudor_deuda_saldo > 0 ? "$".number_format($deudor_deuda_saldo,$JwtAuth->getMonedaAPI($pagos_deudor_moneda),'.', ',')." $pagos_deudor_moneda" : "$0.00 MXN",
+            "habilita_reembolsos" => $vDeu->deu_habilita_reembolsos ? true : false,
+            "estado_de_cuenta" => $estado_cuenta_deudor,
+            "pagos_deudor_list" => $pagos_deudor_list,
+            "movimientos_realizados" => $lista_movimientos_realizados,
+          );
+          $arrayDeudores[] = $arrayForeach;
+        }
+
+        $dataMensaje = array(
+          'status' => 'success',
+          'code' => 200,
+          'deudor' => $arrayDeudores,
+        );
+      }
+    } else {
+      $dataMensaje = array(
+        'status' => 'error',
+        'code' => 200,
+        'message' => 'La informacion que intenta registrar no es valida'
+      );
+    }
+    return response()->json($dataMensaje, $dataMensaje['code']);
+  }

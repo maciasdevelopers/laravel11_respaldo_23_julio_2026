@@ -1,0 +1,1098 @@
+  public function proveedoresBitacora(Request $request){
+    $empresa = $request->get('malchut_ctx')->malchut_hotam;
+    $usuario = $request->get('user_auth')->keter_davidic;
+
+    if (!$empresa) {
+      return response()->json(['status' => 'error','message' => 'Usuario no autenticado, debe seleccionar una empresa'], 428);
+    }
+
+    if (!$usuario) {
+      return response()->json(['status' => 'error','message' => 'Usuario no autenticado'], 401);
+    }
+
+    if ($listOrdenes->isEmpty()) {
+      $dataMensaje = array(
+        'code' => 200,
+        'status' => 'error',
+        'message' => 'No se encontraron ordenes de dispersión de nómina registradas'
+      );
+    } else {
+      $JwtAuth = new \App\Helpers\JwtAuth();
+      $ordenes_pago_lista_general = $this->eachGeneralDisper($listOrdenes,$empresa,$usuario,$JwtAuth);
+
+      $dataMensaje = array(
+        'ordenes' => collect($ordenes_pago_lista_general)->sortBy('id')->values(),
+        'code' => 200,
+        'status' => 'success'
+      );
+    }
+    return response()->json($dataMensaje, $dataMensaje['code']);
+
+
+    $JwtAuth = new \JwtAuth();
+    $jsonUser = $request->input('json');
+    $parametros = json_decode($jsonUser);
+    $parametrosArray = json_decode($jsonUser, true);
+    $arrayProveedores = array();
+    $arrayProvNacional = array();
+    $arrayProvExtranjero = array();
+
+    if (!empty($parametros) && !empty($parametrosArray)) {
+      $validate = \Validator::make($parametrosArray, [
+        "user_token" => "required|string",
+      ]);
+
+      if ($validate->fails()) {
+        $dataMensaje = array(
+          'status' => 'error',
+          'code' => 200,
+          'message' => 'La infomación que ha intantado registrar es invalida',
+          'errors' => $validate->errors()
+        );
+      } else {
+        $usuario = $JwtAuth->checkToken($parametrosArray["user_token"], true);
+
+        $listaProveedores = DB::table("eegr_catalogo_proveedores AS catprov")
+          ->join("sos_personas AS prov", "catprov.proveedor", "prov.id")
+          ->join("teci_pais AS ps", "prov.nacionalidad", "ps.id")
+          ->join("main_empresas AS emp", "catprov.administrador", "=", "emp.id")
+          ->join("main_empresa_usuario AS empuser", "emp.id", "=", "empuser.empresa")
+          ->join("teci_usuarios_catalogo AS users", "empuser.usuario", "=", "users.id")
+          ->where(["emp.empresa_token" => $usuario->empresa_token, "users.usuario_token" => $usuario->user_token, "catprov.status" => TRUE])->get();
+        //echo count($listaProveedores);
+        //echo $JwtAuth->desencriptar("RDRyRWpWczV2eU1mNjBxTXVJQ3pmZz09OjoxMjM0NTY3ODEyMzQ1Njc4");
+        foreach ($listaProveedores as $resListProv) {
+          $autorizado = $resListProv->authorized == TRUE ? true : false;
+          $auth_fecha = $resListProv->authorized == TRUE ? date('d-m-Y H:i:s', $resListProv->authorized_fecha) : null;
+          $utilizado = $resListProv->utilizado == TRUE ? true : false;
+
+          //if ($resListProv->denominacion_rs != '') {
+          //	$nombreProv = $JwtAuth->desencriptar($resListProv->denominacion_rs);
+          //} else {
+          //	$nombreProv = $JwtAuth->desencriptar($resListProv->paterno) . " " .
+          //		$JwtAuth->desencriptar($resListProv->materno) . " " .
+          //		$JwtAuth->desencriptar($resListProv->nombre);
+          //}
+
+          $nombreProv = $JwtAuth->desencriptar($resListProv->nombre_extendido);
+
+          $rfc_generico = $resListProv->rfc_generico;
+          $rfc_prov = $resListProv->rfc != NULL ? $JwtAuth->desencriptar($resListProv->rfc) : '---';
+          $tax_id_prov = $resListProv->tax_id != NULL ? $JwtAuth->desencriptar($resListProv->tax_id) : '---';
+
+          if ($resListProv->folio != NULL && $resListProv->folio != "") {
+            $folio_prov = 'PRV-' . $JwtAuth->generarFolio($resListProv->folio);
+            if ($resListProv->post_folio != NULL) $folio_prov = $folio_prov . '-' . $resListProv->post_folio;
+          } else {
+            $folio_prov = 'PRV-TEMP-' . $JwtAuth->generarFolio($resListProv->temp_folio);
+          }
+
+          $lista_precios = $resListProv->lista_precios != NULL ? "A" : "";
+
+          //if ($resListProv->denominacion_rs == '') {
+          //	$nombre_prov_ = strtolower($JwtAuth->desencriptarNombres($resListProv->paterno,$resListProv->materno,$resListProv->nombre));
+          //} else {
+          //	$nombre_prov_ = strtolower($JwtAuth->desencriptar($resListProv->denominacion_rs));
+          //}
+          //$updateProvName = DB::table("eegr_catalogo_proveedores AS catprov")
+          //->join("sos_personas AS prov", "catprov.proveedor", "prov.id")
+          //->where(["catprov.token_cat_proveedores" => $resListProv->token_cat_proveedores])
+          //->limit(1)->update(
+          //    array(
+          //        'prov.nombre_extendido' => $JwtAuth->encriptar($nombre_prov_),
+          //        'prov.paterno' => NULL,
+          //        'prov.materno' => NULL,
+          //        'prov.nombre' => NULL,
+          //        'prov.denominacion_rs' => NULL,
+          //    )
+          //);
+
+          $credProveedor = DB::table("eegr_catalogo_proveedores AS catprv")
+            ->join("in_egr_creditos AS cred", "catprv.id", "=", "cred.proveedor")
+            ->where(["catprv.token_cat_proveedores" => $resListProv->token_cat_proveedores])->value("cred.aceptacredito");
+
+          $arrayForeach = array(
+            "token_cat_proveedores" => $resListProv->token_cat_proveedores,
+            "folio" => $folio_prov,
+            "pais" => $resListProv->pais,
+            "rfc_generico" => $rfc_generico,
+            "rfc_prov" => $rfc_prov,
+            "tax_id_prov" => $tax_id_prov,
+            "nombre" => $nombreProv,
+            "listaPrecios" => $lista_precios,
+            "tiene_clave" => "",
+            "encendido" => false,
+            "utilizado" => $utilizado,
+            "autorizado" => $autorizado,
+            "auth_fecha" => $auth_fecha,
+            "receptFactura" => $resListProv->receptFactura ? true : false,
+            "aceptacredito" => $credProveedor ? true : false,
+            "infoCollapsed" => true,
+            "comprasCollapsed" => true,
+            "data_detalle_vista" => false,
+            "data_detalle" => [],
+            "data_para_compras" => [],
+            "data_anticipos" => [],
+          );
+
+          $arrayProveedores[] = $arrayForeach;
+
+          $resListProv->nacionalidad == 118 ? $arrayProvNacional[] = $arrayForeach : $arrayProvExtranjero[] = $arrayForeach;
+        }
+
+        $dataMensaje = array(
+          'status' => 'success',
+          'code' => 200,
+          'bitacora' => $JwtAuth->selectBitacoraActividad('egresos', 'catalogos', 'proveedores', $usuario->empresa_token, $usuario->user_token),
+          'proveedores' => $arrayProveedores,
+          'proveedornac' => $arrayProvNacional,
+          'proveedorext' => $arrayProvExtranjero
+        );
+      }
+    } else {
+      $dataMensaje = array(
+        'status' => 'error',
+        'code' => 200,
+        'message' => 'La informacion que intenta registrar no es valida'
+      );
+    }
+    return response()->json($dataMensaje, $dataMensaje['code']);
+  }
+
+    public function catalogoProvVincularNewUsuario(Request $request){
+    $JwtAuth = new \JwtAuth();
+    $jsonUser = $request->input('json');
+    $parametros = json_decode($jsonUser);
+    $parametrosArray = json_decode($jsonUser, true);
+    $arrayProveedores = array();
+
+    if (!empty($parametros) && !empty($parametrosArray)) {
+      $validate = \Validator::make($parametrosArray, [
+        "user_token" => "required|string",
+        "soli_vinculo_token" => "required|string",
+        "token_proveedor" => "required|string",
+      ]);
+
+      if ($validate->fails()) {
+        $dataMensaje = array(
+          'status' => 'error',
+          'code' => 200,
+          'message' => 'La infomación que ha intantado registrar es invalida',
+          'errors' => $validate->errors()
+        );
+      } else {
+        $usuario = $JwtAuth->checkToken($parametrosArray["user_token"], true);
+        $soli_vinculo_token = $parametrosArray["soli_vinculo_token"];
+        $token_proveedor = $parametrosArray["token_proveedor"];
+
+        $listaProveedores = DB::table("eegr_catalogo_proveedores_soli_vinc_usuario AS prvVuser")
+          ->join("eegr_catalogo_proveedores AS catprov", "prvVuser.proveedor", "catprov.id")
+          ->join("sos_personas AS prov", "catprov.proveedor", "prov.id")
+          ->join("main_empresas AS emp", "prvVuser.empresa", "=", "emp.id")
+          ->join("main_empresa_usuario AS empuser", "emp.id", "=", "empuser.empresa")
+          ->join("teci_usuarios_catalogo AS users", "empuser.usuario", "=", "users.id")
+          ->where("prvVuser.token_soli_vinculo", $soli_vinculo_token)
+          //->where("prvVuser.aprobada",FALSE)
+          ->where("catprov.token_cat_proveedores", $token_proveedor)
+          //->where("catprov.status",TRUE)
+          ->where("emp.empresa_token", $usuario->empresa_token)
+          ->where("users.usuario_token", $usuario->user_token)
+          ->get();
+
+        foreach ($listaProveedores as $vVProv) {
+          date_default_timezone_set('UTC');
+          $folio_prov = 'PRV-' . $JwtAuth->generarFolio($vVProv->folio) . (!is_null($vVProv->post_folio) ? '-' . $vVProv->post_folio : '');
+          $prov_id = DB::table("eegr_catalogo_proveedores")->where("token_cat_proveedores", $vVProv->token_cat_proveedores)->value("id");
+          $usuario_alias = "";
+
+          $queryVincProvs = DB::table("teci_usuarios_catalogo")
+            ->where("acceso_email", $vVProv->info_comparativa)
+            ->get();
+
+          if (count($queryVincProvs) > 0) {
+            foreach ($queryVincProvs as $users) {
+              $usuario_alias = $JwtAuth->desencriptar($users->usuario_alias);
+              $user_id = DB::table("teci_usuarios_catalogo")->where("usuario_token", $users->usuario_token)->value("id");
+
+              //create table main_proveedor_usuario(
+              //id int(10) primary key not null AUTO_INCREMENT,
+              //proveedor int(10),
+              //usuario int(10),
+              //vinculacion_estado boolean,
+              //vinculacion_apagado varchar(10),
+              //foreign key (proveedor) references eegr_catalogo_proveedores (id),
+              //foreign key (usuario) references teci_usuarios_catalogo (id)
+              //);
+
+              $insertSoliPerm = DB::table("main_proveedor_usuario")
+                ->insert(
+                  array(
+                    "proveedor" => $prov_id,
+                    "usuario" => $user_id,
+                    //"solicitud_prov_status" => TRUE,
+                  )
+                );
+            }
+          } else {
+            //$tokenUserNew = $JwtAuth->encriptarToken($folio_prov, $JwtAuth->encriptar($user_email), $JwtAuth->encriptar($user_email_encrypt), $tokenUserPersona);
+            //$dataUser = new User();
+            //$dataUser->usuario_token = $tokenUserNew;
+            //$dataUser->usuario_alias = $vVProv->email_vinculo;
+            //$dataUser->acceso_email = $vVProv->info_comparativa;
+            //$dataUser->login_permission = TRUE;
+            //$dataUser->jerarquia_main = $jerarquia_main;
+            //$dataUser->tipo = 8;
+            //$dataUser->empresa = 1;
+            //$dataUser->empleado = $selectEmpleado;
+
+          }
+
+          $updateCredenciales = DB::table("eegr_catalogo_proveedores_soli_vinc_usuario")
+            ->where('token_soli_vinculo', $vVProv->token_soli_vinculo)
+            ->limit(1)->update(array('aprobada' => TRUE, 'fecha_aprobacion' => time()));
+
+          $dataMensaje = array(
+            'status' => 'success',
+            'code' => 200,
+            'message' => "Proveedor con folio $folio_prov ha sido ha sido vinculado al usuario con alias $usuario_alias"
+          );
+        }
+      }
+    } else {
+      $dataMensaje = array(
+        'status' => 'error',
+        'code' => 200,
+        'message' => 'La informacion que intenta registrar no es valida'
+      );
+    }
+    return response()->json($dataMensaje, $dataMensaje['code']);
+  }
+
+  public function verDetalleProveedor_(Request $request){
+    $JwtAuth = new \JwtAuth();
+    $jsonUser = $request->input('json');
+    $parametros = json_decode($jsonUser);
+    $parametrosArray = json_decode($jsonUser, true);
+    $arrayProveedor = array();
+    $proveedor_name_edit = array();
+
+    if (!empty($parametros) && !empty($parametrosArray)) {
+
+      $validate = \Validator::make($parametrosArray, [
+        'user_token' => 'required',
+        'provdatta' => 'required'
+      ]);
+
+      if ($validate->fails()) {
+        $dataMensaje = array(
+          'status' => 'error',
+          'code' => 200,
+          'message' => 'Los parametros de busqueda recibidos son incorrectos',
+          'errors' => $validate->errors()
+        );
+      } else {
+        $usuario = $JwtAuth->checkToken($parametrosArray['user_token'], true);
+
+        QRCode::text($parametrosArray['user_token'])->setOutfile(Storage::path('public/root/QRPersonal.png'))->png();
+
+        $proveedor = $parametrosArray['provdatta'];
+
+        $buscaProveedor = ProveedoresModelo::join("sos_personas AS perns", "eegr_catalogo_proveedores.proveedor", "=", "perns.id")
+          ->join("teci_pais AS country", "perns.nacionalidad", "=", "country.id")
+          ->join("teci_forma_pago AS fpago", "eegr_catalogo_proveedores.forma_pago", "=", "fpago.id")
+          ->join("in_egr_creditos AS cred", "eegr_catalogo_proveedores.id", "=", "cred.proveedor")
+          ->join("main_empresas AS emp", "eegr_catalogo_proveedores.administrador", "=", "emp.id")
+          ->join("main_empresa_usuario AS empuser", "emp.id", "=", "empuser.empresa")
+          ->join("teci_usuarios_catalogo AS users", "empuser.usuario", "=", "users.id")
+          ->where([
+            'eegr_catalogo_proveedores.token_cat_proveedores' => $proveedor,
+            'emp.empresa_token' => $usuario->empresa_token,
+            'users.usuario_token' => $usuario->user_token,
+          ])->get();
+        //echo count($buscaProveedor);
+
+        if (count($buscaProveedor) == 1) {
+          foreach ($buscaProveedor as $valViewProv) {
+            date_default_timezone_set($valViewProv->zona_horaria);
+            $arrayActividad = array();
+            $select_bitacora = DB::select(
+              "SELECT bit_prv.*,
+              people.paterno,people.materno,people.nombre 
+              FROM eegr_catalogo_proveedores_bitacora AS bit_prv
+              JOIN eegr_catalogo_proveedores AS catprov
+              JOIN main_empresas AS emp JOIN teci_usuarios_catalogo AS users JOIN vhum_empleados_catalogo AS pers JOIN sos_personas AS people
+              WHERE bit_prv.proveedor = catprov.id AND catprov.token_cat_proveedores = ?
+              AND bit_prv.empresa = emp.id AND emp.empresa_token = ? AND bit_prv.usuario = users.id 
+              AND users.usuario_token = ? AND users.empleado = pers.id AND pers.empleado_name = people.id",
+              [$proveedor, $usuario->empresa_token, $usuario->user_token,]
+            );
+
+            foreach ($select_bitacora as $valBit) {
+              /*bit_prv.token_bitacora_prov,
+                            bit_prv.folio_bitacora_prov,
+                            bit_prv.fecha_bitacora_prov,
+                            bit_prv.actividad,*/
+              $aeachFor = array(
+                "token_bitacora" => $valBit->token_bitacora_prov,
+                "fecha_bitacora" => date('d-m-Y H:i:s', $valBit->fecha_bitacora_prov),
+                "folio_bitacora" => $JwtAuth->generarFolio($valBit->folio_bitacora_prov),
+                "actividad" => $valBit->actividad,
+                "usuario_relacionado" => $JwtAuth->desencriptar($valBit->paterno) . ' ' .
+                  $JwtAuth->desencriptar($valBit->materno) . ' ' . $JwtAuth->desencriptar($valBit->nombre),
+              );
+              $arrayActividad[] = $aeachFor;
+            }
+
+            //cuentas contables 
+            $getCuentasContables = CuentasContablesModelo::join("eegr_catalogo_proveedores AS catprov", "cont_catalogo_cuentas_contables.egresos_proveedores", "=", "catprov.id")
+              ->join("main_empresas AS emp", "catprov.administrador", "=", "emp.id")
+              ->join("main_empresa_usuario AS empuser", "emp.id", "=", "empuser.empresa")
+              ->join("teci_usuarios_catalogo AS users", "empuser.usuario", "=", "users.id")
+              ->where([
+                'catprov.token_cat_proveedores' => $valViewProv->token_cat_proveedores,
+                'emp.empresa_token' => $usuario->empresa_token,
+                'users.usuario_token' => $usuario->user_token,
+              ])->get();
+            $arrayCuentasCont = array();
+            if (count($getCuentasContables) >= 1) {
+              foreach ($getCuentasContables as $valContables) {
+                $alist = array(
+                  "token_cuenta_contable" => $valContables->token_cuenta_contable,
+                  "contable" => $valContables->contable,
+                );
+                $arrayCuentasCont[] = $alist;
+              }
+            }
+
+            //informacion general del proveedor
+            //$arrayRedes = array();
+
+            $textNombreProv = strtolower($JwtAuth->desencriptar($valViewProv->nombre_extendido));
+            $proveedor_name_edit[0] = strtolower($JwtAuth->desencriptar($valViewProv->nombre_extendido));
+
+            $rfc_generico = $valViewProv->rfc_generico;
+
+            if ($valViewProv->rfc != NULL) {
+              $rfc_prov = $JwtAuth->desencriptar($valViewProv->rfc);
+            } else {
+              $rfc_prov = '---';
+            }
+
+            if ($valViewProv->tax_id != NULL) {
+              $tax_id_prov = $JwtAuth->desencriptar($valViewProv->tax_id);
+            } else {
+              $tax_id_prov = '---';
+            }
+
+            if ($valViewProv->nombre_com == '' || $valViewProv->nombre_com == '-') {
+              $nombre_com = '';
+            } else {
+              $nombre_com = $JwtAuth->desencriptar($valViewProv->nombre_com);
+            }
+
+            if ($valViewProv->sitio_web == '' || $valViewProv->sitio_web == '-') {
+              $sitio_web = '';
+            } else {
+              $sitio_web = $JwtAuth->desencriptar($valViewProv->sitio_web);
+            }
+
+            if ($valViewProv->redes_soc != '' && $valViewProv->redes_soc != NULL) {
+              $arrayRedes = array();
+              $listaRedes = json_decode($JwtAuth->desencriptar($valViewProv->redes_soc));
+              for ($r = 0; $r < count($listaRedes); $r++) {
+                $arrayRedes[$r] = $listaRedes[$r];
+              }
+            } else {
+              $arrayRedes = array('', '', '', '');
+            }
+
+            //documentos
+            $rutaDocsProv = $valViewProv->root_tkn . '/0002-cpp/catalogos/proveedores/' . $JwtAuth->generar($valViewProv->folio) . '-' . $valViewProv->fechaAlta . '/';
+
+            if ($valViewProv->const_sit_fiscal == '' || $valViewProv->const_sit_fiscal == NULL) {
+              $const_sit_fiscal = '-';
+              $nameConst_sit_fiscal = '-';
+            } else {
+              if (file_exists(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->const_sit_fiscal)))) {
+                $extensionFiscal = pathinfo(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->const_sit_fiscal)), PATHINFO_EXTENSION);
+                $nameConst_sit_fiscal = $JwtAuth->desencriptar($valViewProv->const_sit_fiscal);
+                if ($extensionFiscal == 'pdf') {
+                  $fiscalB64 = $JwtAuth->encriptaBase64Pdf(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->const_sit_fiscal)));
+                  $const_sit_fiscal = '<iframe src="' . $fiscalB64 . '" width="100%" height="400px"></iframe>';
+                }
+
+                if ($extensionFiscal == 'jpg') {
+                  $fiscalB64 = $JwtAuth->encriptaBase64(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->const_sit_fiscal)));
+                  $const_sit_fiscal = '<img class="responsive-img circle materialboxed imag2" src="' . $fiscalB64 . '">';
+                }
+
+                if ($extensionFiscal == 'png') {
+                  $fiscalB64 = $JwtAuth->encriptaBase64(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->const_sit_fiscal)));
+                  $const_sit_fiscal = '<img class="responsive-img circle materialboxed imag2" src="' . $fiscalB64 . '">';
+                }
+              } else {
+                $const_sit_fiscal = '-';
+                $nameConst_sit_fiscal = '-';
+              }
+            }
+
+            if ($valViewProv->opinion_cumplimiento == '' || $valViewProv->opinion_cumplimiento == NULL) {
+              $doc_opinion_cumplimiento = '-';
+              $nameDoc_opinion_cumplimiento = '-';
+            } else {
+              if (file_exists(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->opinion_cumplimiento)))) {
+                $extensionFiscal = pathinfo(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->opinion_cumplimiento)), PATHINFO_EXTENSION);
+                $nameDoc_opinion_cumplimiento = $JwtAuth->desencriptar($valViewProv->opinion_cumplimiento);
+                if ($extensionFiscal == 'pdf') {
+                  $fiscalB64 = $JwtAuth->encriptaBase64Pdf(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->opinion_cumplimiento)));
+                  $doc_opinion_cumplimiento = '<iframe src="' . $fiscalB64 . '" width="100%" height="400px"></iframe>';
+                }
+
+                if ($extensionFiscal == 'jpg') {
+                  $fiscalB64 = $JwtAuth->encriptaBase64(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->opinion_cumplimiento)));
+                  $doc_opinion_cumplimiento = '<img class="responsive-img circle materialboxed imag2" src="' . $fiscalB64 . '">';
+                }
+
+                if ($extensionFiscal == 'png') {
+                  $fiscalB64 = $JwtAuth->encriptaBase64(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->opinion_cumplimiento)));
+                  $doc_opinion_cumplimiento = '<img class="responsive-img circle materialboxed imag2" src="' . $fiscalB64 . '">';
+                }
+              } else {
+                $doc_opinion_cumplimiento = '-';
+                $nameDoc_opinion_cumplimiento = '-';
+              }
+            }
+
+            if ($valViewProv->no_cuenta_fiscales != NULL && $valViewProv->no_cuenta_fiscales != '') {
+              $no_cuenta_fiscales = $JwtAuth->desencriptar($valViewProv->no_cuenta_fiscales);
+            } else {
+              $no_cuenta_fiscales = '-';
+            }
+
+            //contacto
+            //vigentes 
+            $personalContacto = array();
+
+            $queryContProv = DB::select(
+              "SELECT empleado.token_contacto,areapers.areaemp,cargopers.cargo,people.paterno,people.materno,people.nombre
+						    FROM in_egr_contacto_cliente_proveedor AS empleado JOIN vhum_empleados_catalogo_area AS areapers JOIN vhum_empleados_catalogo_cargo AS cargopers 
+						    JOIN sos_personas AS people JOIN eegr_catalogo_proveedores AS catprov JOIN main_empresas AS emp JOIN main_empresa_usuario AS empuser 
+						    JOIN teci_usuarios_catalogo AS users WHERE empleado.area = areapers.id AND empleado.cargo = cargopers.id AND empleado.nombre = people.id 
+						    AND empleado.status = TRUE AND empleado.cat_proveedores = catprov.id AND catprov.token_cat_proveedores = ? AND catprov.administrador = emp.id 
+						    AND emp.id = empuser.empresa AND emp.empresa_token = ? AND empuser.usuario = users.id AND users.usuario_token = ?",
+              [$proveedor, $usuario->empresa_token, $usuario->user_token]
+            );
+
+            if (count($queryContProv) > 0) {
+              foreach ($queryContProv as $valContProv) {
+                $arrayTelefono = array();
+                $arrayTelefonoDeleted = array();
+                $telefonoProv = DB::select("SELECT tel.token_telefono,tel.icono,tel.etiqueta,tel.telefono,tel.extension
+										    FROM sos_personas_telefonos AS tel JOIN in_egr_contacto_cliente_proveedor AS empleado WHERE tel.status_telefono = TRUE 
+										    AND tel.personal = empleado.id AND empleado.token_contacto = ?", [$valContProv->token_contacto]);
+                if (count($telefonoProv) > 0) {
+                  foreach ($telefonoProv as $valueTelPers) {
+                    $telExtension = '';
+                    if ($valueTelPers->extension != '') {
+                      $telExtension = $JwtAuth->desencriptar($valueTelPers->extension);
+                    }
+                    $arrateleach = array(
+                      'token_telefono' => $valueTelPers->token_telefono,
+                      'telefono' => $JwtAuth->desencriptar($valueTelPers->telefono),
+                      'extension' => $telExtension,
+                      'icono' => $valueTelPers->icono,
+                      'etiqueta' => $valueTelPers->etiqueta,
+                      'validate' => false,
+                    );
+                    $arrayTelefono[] = $arrateleach;
+                  }
+                }
+
+                $telefonoProvDel = DB::select("SELECT tel.token_telefono,tel.icono,tel.etiqueta,tel.telefono,tel.extension,tel.fecha_delete_tel
+										    FROM sos_personas_telefonos AS tel JOIN in_egr_contacto_cliente_proveedor AS empleado WHERE tel.status_telefono = FALSE 
+										    AND tel.personal = empleado.id AND empleado.token_contacto = ?", [$valContProv->token_contacto]);
+                if (count($telefonoProvDel) > 0) {
+                  foreach ($telefonoProvDel as $valueTelPers) {
+                    $telExtension = '';
+                    if ($valueTelPers->extension != '') {
+                      $telExtension = $JwtAuth->desencriptar($valueTelPers->extension);
+                    }
+                    $arrateleach = array(
+                      'token_telefono' => $valueTelPers->token_telefono,
+                      'telefono' => $JwtAuth->desencriptar($valueTelPers->telefono),
+                      'extension' => $telExtension,
+                      'icono' => $valueTelPers->icono,
+                      'etiqueta' => $valueTelPers->etiqueta,
+                      'fechaDelete' => date('d-m-Y H:i:s', $valueTelPers->fecha_delete_tel),
+                    );
+                    $arrayTelefonoDeleted[] = $arrateleach;
+                  }
+                }
+
+                $arrayCorreo = array();
+                $arrayCorreoDel = array();
+
+                $queryContProv = DB::select("SELECT mailpers.token_correo,mailpers.correo
+										FROM sos_personas_correos AS mailpers JOIN in_egr_contacto_cliente_proveedor AS empleado WHERE mailpers.status_correo = TRUE AND mailpers.empleado_name = empleado.id 
+										AND empleado.token_contacto = ?", [$valContProv->token_contacto]);
+
+                if (count($queryContProv) > 0) {
+                  foreach ($queryContProv as $valueMailPers) {
+                    $arrateleach = array(
+                      'token_correo' => $valueMailPers->token_correo,
+                      'correo' => $JwtAuth->desencriptar($valueMailPers->correo)
+                    );
+                    $arrayCorreo[] = $arrateleach;
+                  }
+                }
+
+                $queryContProv = DB::select("SELECT mailpers.token_correo,mailpers.correo,mailpers.fecha_delete_correo
+										FROM sos_personas_correos AS mailpers JOIN in_egr_contacto_cliente_proveedor AS empleado WHERE mailpers.status_correo = FALSE AND mailpers.empleado_name = empleado.id 
+										AND empleado.token_contacto = ?", [$valContProv->token_contacto]);
+
+                if (count($queryContProv) > 0) {
+                  foreach ($queryContProv as $valueMailPers) {
+                    $arrateleach = array(
+                      'token_correo' => $valueMailPers->token_correo,
+                      'correo' => $JwtAuth->desencriptar($valueMailPers->correo),
+                      'fechaDelete' => date('d-m-Y H:i:s', $valueMailPers->fecha_delete_correo),
+                    );
+                    $arrayCorreoDel[] = $arrateleach;
+                  }
+                }
+
+                $proveVig = array(
+                  "token_contacto" => $valContProv->token_contacto,
+                  "paterno" => strtoupper($JwtAuth->desencriptar($valContProv->paterno)),
+                  "materno" => strtoupper($JwtAuth->desencriptar($valContProv->materno)),
+                  "nombre" => strtoupper($JwtAuth->desencriptar($valContProv->nombre)),
+                  "areaemp" => strtolower($JwtAuth->desencriptar($valContProv->areaemp)),
+                  "cargo" => strtolower($JwtAuth->desencriptar($valContProv->cargo)),
+                  "telefono" => $arrayTelefono,
+                  "telefonoDeleted" => $arrayTelefonoDeleted,
+                  "correo" => $arrayCorreo,
+                  "arrayCorreoDel" => $arrayCorreoDel
+                );
+                $personalContacto[] = $proveVig;
+              }
+            }
+
+            //eliminado
+            $personalContactoDel = array();
+
+            $queryContProvDel = DB::select("SELECT empleado.token_contacto,areapers.areaemp,cargopers.cargo,people.paterno,people.materno,people.nombre,empleado.fecha_delete
+							FROM in_egr_contacto_cliente_proveedor AS empleado JOIN vhum_empleados_catalogo_area AS areapers JOIN vhum_empleados_catalogo_cargo AS cargopers 
+							JOIN sos_personas AS people JOIN eegr_catalogo_proveedores AS catprov JOIN main_empresas AS emp JOIN main_empresa_usuario AS empuser 
+							JOIN teci_usuarios_catalogo AS users WHERE empleado.area = areapers.id AND empleado.cargo = cargopers.id AND empleado.nombre = people.id AND empleado.status = FALSE 
+							AND empleado.cat_proveedores = catprov.id AND catprov.token_cat_proveedores = ? AND catprov.administrador = emp.id AND emp.id = empuser.empresa
+							AND emp.empresa_token = ? AND empuser.usuario = users.id AND users.usuario_token = ?", [$proveedor, $usuario->empresa_token, $usuario->user_token]);
+
+            if (count($queryContProvDel) > 0) {
+              foreach ($queryContProvDel as $valContProvDel) {
+                $fecha_delete_pers = date('d-m-Y H:i:s', $valContProvDel->fecha_delete);
+
+                $arrayCorreo = array();
+
+                $queryContProv = DB::select("SELECT mailpers.token_correo,mailpers.correo
+										FROM correos_personal AS mailpers JOIN in_egr_contacto_cliente_proveedor AS empleado WHERE mailpers.empleado_name = empleado.id 
+										AND empleado.token_contacto = ?", [$valContProvDel->token_contacto]);
+
+                if (count($queryContProv) > 0) {
+                  foreach ($queryContProv as $valueMailPers) {
+                    $arrateleach = array(
+                      'token_correo' => $valueMailPers->token_correo,
+                      'correo' => $JwtAuth->desencriptar($valueMailPers->correo)
+                    );
+                    $arrayCorreo[] = $arrateleach;
+                  }
+                }
+
+                $arrayTelefono = array();
+                $telefonoProv = DB::select("SELECT tel.token_telefono,tel.icono,tel.etiqueta,
+										tel.telefono,tel.extension FROM telefonos_personal AS tel 
+										JOIN in_egr_contacto_cliente_proveedor AS empleado WHERE tel.personal = empleado.id
+										AND empleado.token_contacto = ?", [$valContProvDel->token_contacto]);
+
+                if (count($telefonoProv) > 0) {
+                  foreach ($telefonoProv as $valueTelPers) {
+                    $telExtension = '';
+                    if ($valueTelPers->extension != '') {
+                      $telExtension = $JwtAuth->desencriptar($valueTelPers->extension);
+                    }
+                    $arrateleach = array(
+                      'token_telefono' => $valueTelPers->token_telefono,
+                      'icono' => $valueTelPers->icono,
+                      'etiqueta' => $valueTelPers->etiqueta,
+                      'telefono' => $JwtAuth->desencriptar($valueTelPers->telefono),
+                      'extension' => $telExtension,
+                    );
+                    $arrayTelefono[] = $arrateleach;
+                  }
+                }
+
+                $proveDelete = array(
+                  "token" => $valContProvDel->pers_token,
+                  "nombre_completo" => strtoupper($JwtAuth->desencriptar($valContProvDel->paterno) . " " . $JwtAuth->desencriptar($valContProvDel->materno) . " " . $JwtAuth->desencriptar($valContProvDel->nombre)),
+                  "areaemp" => strtoupper($JwtAuth->desencriptar($valContProvDel->areaemp)),
+                  "cargo" => strtoupper($JwtAuth->desencriptar($valContProvDel->cargo)),
+                  "fecha_delete" => $fecha_delete_pers,
+                  "correo" => $arrayCorreo,
+                  "telefono" => $arrayTelefono
+                );
+                $personalContactoDel[] = $proveDelete;
+              }
+            }
+
+            //direcciones 
+            $arrayUbicacion = array();
+            $arrayUbicacionDel = array();
+
+            if ($valViewProv->nacionalidad == 118) {
+              $listaUbicacion = ProveedoresModelo::join("teci_direcciones AS ubica", "ubica.proveedor", "eegr_catalogo_proveedores.id")
+                ->join("teci_direcciones_codigos_postales AS cpostal", "ubica.codigo_postal", "cpostal.id")
+                ->join("teci_pais AS detpais", "ubica.pais", "detpais.id")
+                ->join("main_empresas AS emp", "eegr_catalogo_proveedores.administrador", "emp.id")
+                ->join("main_empresa_usuario AS empuser", "emp.id", "empuser.empresa")
+                ->join("teci_usuarios_catalogo AS users", "empuser.usuario", "users.id")
+                ->where([
+                  "ubica.status" => TRUE,
+                  "eegr_catalogo_proveedores.token_cat_proveedores" => $proveedor,
+                  "emp.empresa_token" => $usuario->empresa_token,
+                  "users.usuario_token" => $usuario->user_token
+                ])->get();
+
+              if (count($listaUbicacion) > 0) {
+                foreach ($listaUbicacion as $valUbicacion) {
+                  if ($valUbicacion->calle != '' && $valUbicacion->calle != NULL) {
+                    $calle = $JwtAuth->desencriptar($valUbicacion->calle);
+                  } else {
+                    $calle = 's/c';
+                  }
+
+                  if ($valUbicacion->num_ext != '' && $valUbicacion->num_ext != NULL) {
+                    $num_ext = $JwtAuth->desencriptar($valUbicacion->num_ext);
+                  } else {
+                    $num_ext = 's/n';
+                  }
+
+                  if ($valUbicacion->num_int != '' && $valUbicacion->num_int != NULL) {
+                    $num_int = $JwtAuth->desencriptar($valUbicacion->num_int);
+                  } else {
+                    $num_int = 's/n';
+                  }
+
+                  if ($valUbicacion->calle1 != '' && $valUbicacion->calle1 != NULL) {
+                    $calle1 = $JwtAuth->desencriptar($valUbicacion->calle1);
+                  } else {
+                    $calle1 = 's/c';
+                  }
+
+                  if ($valUbicacion->calle2 != '' && $valUbicacion->calle2 != NULL) {
+                    $calle2 = $JwtAuth->desencriptar($valUbicacion->calle2);
+                  } else {
+                    $calle2 = 's/c';
+                  }
+
+                  if ($valUbicacion->referencia != '' && $valUbicacion->referencia != NULL) {
+                    $referencia = $JwtAuth->desencriptar($valUbicacion->referencia);
+                  } else {
+                    $referencia = 's/reg';
+                  }
+
+                  $eachUbicacion = array(
+                    "token_direccion" => $valUbicacion->token_direccion,
+                    "tipo_direccion" => $valUbicacion->tipo_direccion,
+                    "clasificacion" => $JwtAuth->desencriptar($valUbicacion->clase),
+                    "alias" => $JwtAuth->desencriptar($valUbicacion->alias),
+                    "calle" => $calle,
+                    "num_ext" => $num_ext,
+                    "num_int" => $num_int,
+                    "token_codigos_postales" => $valUbicacion->token_codigos_postales,
+                    "codigo_postal" => $valUbicacion->codigo_postal,
+                    "asentamiento" => $valUbicacion->asentamiento,
+                    "tipo_asentamiento" => $valUbicacion->tipo_asentamiento,
+                    "deleg_mun" => $valUbicacion->deleg_mun,
+                    "estado" => $valUbicacion->estado,
+                    "ciudad" => $valUbicacion->ciudad,
+                    "pais" => $valUbicacion->pais,
+                    "calle1" => $calle1,
+                    "calle2" => $calle2,
+                    "referencia" => $referencia,
+                    "validate" => false,
+                  );
+                  $arrayUbicacion[] = $eachUbicacion;
+                }
+              }
+
+              $listaUbicacionDel = ProveedoresModelo::join("teci_direcciones AS ubica", "ubica.proveedor", "eegr_catalogo_proveedores.id")
+                ->join("teci_direcciones_codigos_postales AS cpostal", "ubica.codigo_postal", "cpostal.id")
+                ->join("teci_pais AS detpais", "ubica.pais", "detpais.id")
+                ->join("main_empresas AS emp", "eegr_catalogo_proveedores.administrador", "emp.id")
+                ->join("main_empresa_usuario AS empuser", "emp.id", "empuser.empresa")
+                ->join("teci_usuarios_catalogo AS users", "empuser.usuario", "users.id")
+                ->where([
+                  "ubica.status" => FALSE,
+                  "eegr_catalogo_proveedores.token_cat_proveedores" => $proveedor,
+                  "emp.empresa_token" => $usuario->empresa_token,
+                  "users.usuario_token" => $usuario->user_token
+                ])->get();
+
+              if (count($listaUbicacionDel) > 0) {
+                foreach ($listaUbicacionDel as $valUbicacion) {
+                  if ($valUbicacion->calle != '' && $valUbicacion->calle != NULL) {
+                    $calle = $JwtAuth->desencriptar($valUbicacion->calle);
+                  } else {
+                    $calle = 's/c';
+                  }
+
+                  if ($valUbicacion->num_ext != '' && $valUbicacion->num_ext != NULL) {
+                    $num_ext = $JwtAuth->desencriptar($valUbicacion->num_ext);
+                  } else {
+                    $num_ext = 's/n';
+                  }
+
+                  if ($valUbicacion->num_int != '' && $valUbicacion->num_int != NULL) {
+                    $num_int = $JwtAuth->desencriptar($valUbicacion->num_int);
+                  } else {
+                    $num_int = 's/n';
+                  }
+
+                  if ($valUbicacion->calle1 != '' && $valUbicacion->calle1 != NULL) {
+                    $calle1 = $JwtAuth->desencriptar($valUbicacion->calle1);
+                  } else {
+                    $calle1 = 's/c';
+                  }
+
+                  if ($valUbicacion->calle2 != '' && $valUbicacion->calle2 != NULL) {
+                    $calle2 = $JwtAuth->desencriptar($valUbicacion->calle2);
+                  } else {
+                    $calle2 = 's/c';
+                  }
+
+                  if ($valUbicacion->referencia != '' && $valUbicacion->referencia != NULL) {
+                    $referencia = $JwtAuth->desencriptar($valUbicacion->referencia);
+                  } else {
+                    $referencia = 's/reg';
+                  }
+
+                  $eachUbicacion = array(
+                    "token_direccion" => $valUbicacion->token_direccion,
+                    "fecha_delete" => date('d-m-Y H:i:s', $valUbicacion->fecha_delete_dir),
+                    "tipo_direccion" => $valUbicacion->tipo_direccion,
+                    "clasificacion" => $JwtAuth->desencriptar($valUbicacion->clase),
+                    "alias" => $JwtAuth->desencriptar($valUbicacion->alias),
+                    "calle" => $calle,
+                    "num_ext" => $num_ext,
+                    "num_int" => $num_int,
+                    "token_codigos_postales" => $valUbicacion->token_codigos_postales,
+                    "codigo_postal" => $valUbicacion->codigo_postal,
+                    "asentamiento" => $valUbicacion->asentamiento,
+                    "tipo_asentamiento" => $valUbicacion->tipo_asentamiento,
+                    "deleg_mun" => $valUbicacion->deleg_mun,
+                    "estado" => $valUbicacion->estado,
+                    "ciudad" => $valUbicacion->ciudad,
+                    "pais" => $valUbicacion->pais,
+                    "calle1" => $calle1,
+                    "calle2" => $calle2,
+                    "referencia" => $referencia,
+                    "validate" => false,
+                  );
+                  $arrayUbicacionDel[] = $eachUbicacion;
+                }
+              }
+            } else {
+              $listUbicacion = DireccionesModelo::join('teci_pais AS detpais', 'direcciones.pais', 'detpais.id')
+                ->join('eegr_catalogo_proveedores AS catprov', 'direcciones.proveedor', 'catprov.id')
+                ->join('main_empresas AS emp', 'catprov.administrador', 'emp.id')
+                ->join('main_empresa_usuario AS empuser', 'emp.id', 'empuser.empresa')
+                ->join('teci_usuarios_catalogo AS users', 'empuser.usuario', 'users.id')
+                ->where([
+                  'direcciones.status' => TRUE,
+                  'catprov.token_cat_proveedores' => $proveedor,
+                  'emp.empresa_token' => $usuario->empresa_token,
+                  'users.usuario_token' => $usuario->user_token
+                ])->get();
+
+              if (count($listUbicacion) > 0) {
+                foreach ($listUbicacion as $valUbicacion) {
+                  if ($valUbicacion->calle == NULL) {
+                    $valUbiCalle = 'sin Dirección';
+                  } else {
+                    $valUbiCalle = $JwtAuth->desencriptar($valUbicacion->calle);
+                  }
+                  $eachUbicacion = array(
+                    "token_direccion" => $valUbicacion->token_direccion,
+                    "tipo_direccion" => $valUbicacion->tipo_direccion,
+                    "clasificacion" => $JwtAuth->desencriptar($valUbicacion->clase),
+                    "alias" => $JwtAuth->desencriptar($valUbicacion->alias),
+                    "cod_postalext" => $JwtAuth->desencriptar($valUbicacion->cod_postalext),
+                    "dir_completa" => $valUbiCalle,
+                    "pais" => $valUbicacion->pais,
+                    "validate" => false,
+                  );
+                  $arrayUbicacion[] = $eachUbicacion;
+                }
+              }
+
+              $listUbicacionDel = DireccionesModelo::join('teci_pais AS detpais', 'direcciones.pais', 'detpais.id')
+                ->join('eegr_catalogo_proveedores AS catprov', 'direcciones.proveedor', 'catprov.id')
+                ->join('main_empresas AS emp', 'catprov.administrador', 'emp.id')
+                ->join('main_empresa_usuario AS empuser', 'emp.id', 'empuser.empresa')
+                ->join('teci_usuarios_catalogo AS users', 'empuser.usuario', 'users.id')
+                ->where([
+                  'direcciones.status' => FALSE,
+                  'catprov.token_cat_proveedores' => $proveedor,
+                  'emp.empresa_token' => $usuario->empresa_token,
+                  'users.usuario_token' => $usuario->user_token
+                ])->get();
+
+              if (count($listUbicacionDel) > 0) {
+                foreach ($listUbicacionDel as $valUbicacionDel) {
+                  if ($valUbicacionDel->calle == NULL) {
+                    $valUbiCalle = 'sin Dirección';
+                  } else {
+                    $valUbiCalle = $JwtAuth->desencriptar($valUbicacionDel->calle);
+                  }
+                  $eachUbicacion = array(
+                    "token_direccion" => $valUbicacionDel->token_direccion,
+                    "tipo_direccion" => $valUbicacionDel->tipo_direccion,
+                    "fecha_delete" => date('d-m-Y H:i:s', $valUbicacionDel->fecha_delete_dir),
+                    "clasificacion" => $JwtAuth->desencriptar($valUbicacionDel->clase),
+                    "alias" => $JwtAuth->desencriptar($valUbicacionDel->alias),
+                    "cod_postalext" => $JwtAuth->desencriptar($valUbicacionDel->cod_postalext),
+                    "dir_completa" => $valUbiCalle,
+                    "pais" => $valUbicacionDel->pais,
+                    "validate" => false,
+                  );
+                  $arrayUbicacionDel[] = $eachUbicacion;
+                }
+              }
+            }
+
+            //forma de pago
+            $arregloformaPago = array();
+            $listaformaspago = array();
+            $listafp = FormaPagoModelo::all();
+            $forma_pago_concept = '';
+            foreach ($listafp as $valFormaPagoo) {
+              if ($valFormaPagoo->token_formapago == $valViewProv->token_formapago) {
+                $selected = true;
+                $forma_pago_concept = $valFormaPagoo->clave . ' - ' . $valFormaPagoo->forma;
+              } else {
+                $selected = false;
+              }
+              $arrayEachFormaPago = array(
+                "selected" => $selected,
+                "token_formapago" => $valFormaPagoo->token_formapago,
+                "clave" => $valFormaPagoo->clave,
+                "forma" => $valFormaPagoo->forma,
+              );
+              $listaformaspago[] = $arrayEachFormaPago;
+            }
+
+            if ($valViewProv->tipo_referencia_pago != NULL) {
+              if ($valViewProv->tipo_referencia_pago == 'ci') {
+                $tipo_referencia_pago = 'clabeInterbancaria';
+              } else if ($valViewProv->tipo_referencia_pago == 'co') {
+                $tipo_referencia_pago = 'convenio';
+              } else if ($valViewProv->tipo_referencia_pago == 'lc') {
+                $tipo_referencia_pago = 'lineaCaptura';
+              }
+            } else {
+              $tipo_referencia_pago = '';
+            }
+
+            if ($valViewProv->token_formapago == 'RkxGMTRidG44ZWJJYVh0dUlDK1o4Zz09OjoxMjM0NTY3ODEyMzQ1Njc4') {
+              if ($valViewProv->estado_cuenta == '' || $valViewProv->estado_cuenta == NULL) {
+                $doc_estado_cuenta = '';
+                $nameEstado_cuenta = '';
+              } else {
+                //echo $valViewProv->estado_cuenta;
+                if (file_exists(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->estado_cuenta)))) {
+                  $extensionFiscal = pathinfo(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->estado_cuenta)), PATHINFO_EXTENSION);
+                  $nameEstado_cuenta = $JwtAuth->desencriptar($valViewProv->estado_cuenta);
+                  if ($extensionFiscal == 'pdf') {
+                    $est_cuentaB64 = $JwtAuth->encriptaBase64Pdf(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->estado_cuenta)));
+                    $doc_estado_cuenta = '<iframe src="' . $est_cuentaB64 . '" width="100%" height="400px"></iframe>';
+                  }
+
+                  if ($extensionFiscal == 'jpg') {
+                    $est_cuentaB64 = $JwtAuth->encriptaBase64(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->opinion_cumplimiento)));
+                    $doc_estado_cuenta = '<img class="responsive-img circle materialboxed imag2" src="' . $est_cuentaB64 . '">';
+                  }
+
+                  if ($extensionFiscal == 'png') {
+                    $est_cuentaB64 = $JwtAuth->encriptaBase64(Storage::path('public/root/' . $rutaDocsProv . $JwtAuth->desencriptar($valViewProv->opinion_cumplimiento)));
+                    $doc_estado_cuenta = '<img class="responsive-img circle materialboxed imag2" src="' . $est_cuentaB64 . '">';
+                  }
+                } else {
+                  $nameEstado_cuenta = '';
+                  $doc_estado_cuenta = '';
+                }
+              }
+
+              $forma_pago = array(
+                "token_formapago" => $valViewProv->token_formapago,
+                "validateclint" => 'transferencia',
+                "clabe_interbancaria" => $valViewProv->clabe_interbancaria,
+                "doc_estado_cuenta" => $doc_estado_cuenta,
+                "estado_cuenta" => $nameEstado_cuenta,
+                "forma_pago_concept" => $forma_pago_concept,
+                "tipo_referencia_pago" => $tipo_referencia_pago,
+              );
+              $arregloformaPago[] = $forma_pago;
+            } else {
+              $forma_pago = array(
+                "token_formapago" => $valViewProv->token_formapago,
+                "validateclint" => 'noneView',
+                "clabe_interbancaria" => '',
+                "doc_estado_cuenta" => '',
+                "estado_cuenta" => '',
+                "forma_pago_concept" => $forma_pago_concept,
+                "tipo_referencia_pago" => $tipo_referencia_pago,
+              );
+              $arregloformaPago[] = $forma_pago;
+            }
+
+            //creditos
+            $token_moneda = '';
+            $arregloCreditos = array();
+            $queryAsignCreditos = DB::select(
+              "SELECT cred.token_creditos,cred.aceptacredito,
+							IF (cred.moneda in (SELECT id FROM teci_catalogo_monedas),
+								(SELECT token_monedas FROM teci_catalogo_monedas WHERE id = cred.moneda),'') AS token_monedas, 
+							IF (cred.moneda in (SELECT id FROM teci_catalogo_monedas),
+								(SELECT codigo FROM teci_catalogo_monedas WHERE id = cred.moneda),'') AS codigo,
+							IF (cred.moneda in (SELECT id FROM teci_catalogo_monedas),
+								(SELECT moneda FROM teci_catalogo_monedas WHERE id = cred.moneda),'') AS moneda, 
+							IF (cred.moneda in (
+								SELECT id FROM teci_catalogo_monedas),cred.limite,'') AS limite,
+							IF (cred.moneda in (SELECT id FROM teci_catalogo_monedas),cred.dias,'') AS diasPago,
+							IF (cred.moneda in (SELECT id FROM teci_catalogo_monedas),cred.comienza,'') AS comienza
+							FROM in_egr_creditos AS cred
+							JOIN eegr_catalogo_proveedores AS catprov JOIN main_empresas AS emp
+							JOIN main_empresa_usuario AS empuser JOIN teci_usuarios_catalogo AS users
+							WHERE cred.token_creditos = ? AND cred.proveedor = catprov.id AND catprov.token_cat_proveedores = ? 
+							AND catprov.administrador = emp.id AND emp.id = empuser.empresa AND emp.empresa_token = ? 
+							AND empuser.usuario = users.id AND users.usuario_token = ?",
+              [$valViewProv->token_creditos, $proveedor, $usuario->empresa_token, $usuario->user_token]
+            );
+
+            foreach ($queryAsignCreditos as $valCreditos) {
+              if ($valCreditos->aceptacredito == TRUE) {
+                $token_moneda = $valCreditos->token_monedas;
+                $aceptaCredito = true;
+                $diasPago = 86400 * $valCreditos->diasPago;
+                $fLimitePago = time() + $diasPago;
+                $fechaLimitePago = date('d-m-Y', $fLimitePago);
+              } else {
+                $token_moneda = '';
+                $fechaLimitePago = '';
+                $aceptaCredito = false;
+              }
+              $creditosEach = array(
+                "token_creditos" => $valViewProv->token_creditos,
+                "acepta" => $aceptaCredito,
+                "codigo_moneda" => $valCreditos->codigo,
+                "token_moneda" => $token_moneda,
+                "moneda" => $valCreditos->moneda,
+                "limite" => $valCreditos->limite,
+                "dias" => $valCreditos->diasPago,
+                "fechalimite" => $fechaLimitePago,
+                "comienza" => $valCreditos->comienza
+              );
+              $arregloCreditos[] = $creditosEach;
+            }
+
+            $arrayMonedas = array();
+            $catMonedas = MonedasModelo::get();
+
+            foreach ($catMonedas as $valMonedas) {
+              //echo $valMonedas->token_monedas;
+              if ($valMonedas->token_monedas == $token_moneda) {
+                $selected = true;
+              } else {
+                $selected = false;
+              }
+
+              $arrayMon = array(
+                "token_monedas" => $valMonedas->token_monedas,
+                "codigo" => $valMonedas->codigo,
+                "moneda" => $valMonedas->moneda,
+                "decimales" => $valMonedas->decimales,
+                "selected" => $selected,
+              );
+              $arrayMonedas[] = $arrayMon;
+            }
+
+
+            if ($valViewProv->tiene_docs_fiscales == TRUE) {
+              $tiene_docs_fiscales = true;
+            } else {
+              $tiene_docs_fiscales = false;
+            }
+
+            if ($valViewProv->post_folio == NULL) {
+              $folio_prov = 'prv-' . $JwtAuth->generarFolio($valViewProv->folio);
+            } else {
+              $folio_prov = 'prv-' . $JwtAuth->generarFolio($valViewProv->folio) . '-' . $valViewProv->post_folio;
+            }
+
+            $arrayForeachProv = array(
+              "token_proveedor" => $valViewProv->token_cat_proveedores,
+              "folio" => $folio_prov,
+              "textNombreProv" => $textNombreProv,
+              "proveedor_name_edit" => $proveedor_name_edit,
+              "nationality" => $valViewProv->nacionalidad,
+              "pais_ident" => $valViewProv->token_pais,
+              "pais_name" => $valViewProv->pais,
+              "rfc_generico" => $rfc_generico,
+              "rfc_prov" => $rfc_prov,
+              "tax_id_prov" => $tax_id_prov,
+              "nombre_comercial" => $nombre_com,
+              "sitio_web" => $sitio_web,
+              "redes_sociales" => $arrayRedes,
+              "lista_precios" => $valViewProv->listaPrecios,
+              "personal" => $personalContacto,
+              "personalDelete" => $personalContactoDel,
+              "const_sit_fiscal" => $const_sit_fiscal,
+              "nameConst_sit_fiscal" => $nameConst_sit_fiscal,
+              "tiene_docs_fiscales" => $tiene_docs_fiscales,
+              "doc_opinion_cumplimiento" => $doc_opinion_cumplimiento,
+              "nameDoc_opinion_cumplimiento" => $nameDoc_opinion_cumplimiento,
+              "noCargaDocsFiscalesRazon" => $no_cuenta_fiscales,
+              "creditos" => $arregloCreditos,
+              "arrayMonedas" => $arrayMonedas,
+              "forma_pago" => $arregloformaPago,
+              "listaformaspago" => $listaformaspago,
+              "arrayUbicacion" => $arrayUbicacion,
+              "arrayUbicacionDel" => $arrayUbicacionDel,
+              "arrayCuentasCont" => $arrayCuentasCont,
+              "bitacora" => $arrayActividad,
+            );
+
+            $arrayProveedor[] = $arrayForeachProv;
+
+            $dataMensaje = array(
+              'proveedor' => $arrayProveedor,
+              'code' => 200,
+              'status' => 'success'
+            );
+          }
+        } else {
+          $dataMensaje = array(
+            'status' => 'error',
+            'code' => 200,
+            'message' => 'El proveedor seleccionado no esta registrado, por favor intente mas tarde'
+          );
+        }
+      }
+    } else {
+      $dataMensaje = array(
+        'status' => 'error',
+        'code' => 200,
+        'message' => 'Los parametro de busqueda recibidos son inexistentes'
+      );
+    }
+    return response()->json($dataMensaje, $dataMensaje['code']);
+  }
